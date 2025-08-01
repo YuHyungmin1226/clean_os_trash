@@ -88,7 +88,7 @@ function Remove-Task {
     }
 }
 
-function Create-Task {
+function New-Task {
     """새로운 작업을 생성합니다."""
     try {
         Write-Host "새로운 작업을 생성합니다..." -ForegroundColor Cyan
@@ -163,7 +163,7 @@ switch ($Action.ToLower()) {
         Remove-Task
     }
     "create" {
-        Create-Task
+        New-Task
     }
     default {
         Show-Help
