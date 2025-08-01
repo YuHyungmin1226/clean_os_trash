@@ -1,0 +1,35 @@
+{
+    "trash_files": [
+        ".DS_Store",
+        "._*",
+        ".Spotlight-V100",
+        ".Trashes",
+        ".fseventsd",
+        "Thumbs.db",
+        "desktop.ini"
+    ],
+    "logging": {
+        "level": "INFO",
+        "file": "clean_mac_trash.log",
+        "max_size_mb": 10,
+        "backup_count": 5
+    },
+    "safety": {
+        "confirm_deletion": true,
+        "dry_run_by_default": false,
+        "backup_before_delete": false,
+        "backup_dir": "backup"
+    },
+    "usb_cleanup": {
+        "check_interval_minutes": 1,
+        "lock_timeout_minutes": 5,
+        "auto_start": true
+    },
+    "exclude_patterns": [
+        "System Volume Information",
+        "$RECYCLE.BIN",
+        "Windows",
+        "Program Files",
+        "Program Files (x86)"
+    ]
+} 
