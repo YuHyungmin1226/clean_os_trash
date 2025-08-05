@@ -4,6 +4,7 @@ import shutil
 import logging
 import json
 import argparse
+import subprocess
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from logging.handlers import RotatingFileHandler
@@ -29,13 +30,25 @@ DEFAULT_CONFIG = {
         "Windows",
         "Program Files",
         "Program Files (x86)"
-    ]
+    ],
+    "drive_scan": {
+        "include_removable": True,
+        "include_fixed": False,
+        "exclude_system_drives": True,
+        "system_drives": ["C:"]
+    }
 }
 
 def load_config(config_path: str = None) -> Dict[str, Any]:
     """설정 파일을 로드합니다."""
     if config_path is None:
-        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        # 실행 파일의 경우 현재 작업 디렉토리에서 설정 파일 찾기
+        if getattr(sys, 'frozen', False):
+            # PyInstaller로 빌드된 실행 파일인 경우
+            config_path = os.path.join(os.getcwd(), "config.json")
+        else:
+            # Python 스크립트인 경우
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
     
     try:
         if os.path.exists(config_path):
@@ -175,6 +188,72 @@ def get_trash_items(root_dir: str, config: Dict[str, Any]) -> Tuple[List[str], L
     
     return files_to_remove, dirs_to_remove
 
+def get_connected_drives() -> List[str]:
+    """연결된 모든 드라이브 목록을 반환합니다."""
+    drives = []
+    try:
+        # PowerShell을 사용하여 드라이브 정보 가져오기
+        result = subprocess.run(
+            ['powershell', '-Command', 'Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize'],
+            capture_output=True, text=True, encoding='utf-8'
+        )
+        
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if line.strip() and '----' not in line and 'Name' not in line:
+                    # 드라이브 문자 추출 (예: "D" 또는 "E")
+                    parts = line.strip().split()
+                    if parts:
+                        drive_letter = parts[0].strip()
+                        if len(drive_letter) == 1 and drive_letter.isalpha():
+                            drive_path = f"{drive_letter}:\\"
+                            if os.path.exists(drive_path):
+                                drives.append(drive_path)
+        
+        # 대안: os 모듈 사용
+        if not drives:
+            for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+                drive_path = f"{letter}:\\"
+                if os.path.exists(drive_path):
+                    drives.append(drive_path)
+                    
+    except Exception as e:
+        print(f"드라이브 목록 가져오기 실패: {e}")
+        # 기본적으로 알려진 드라이브들 확인
+        for letter in 'DEFGHIJKLMNOPQRSTUVWXYZ':
+            drive_path = f"{letter}:\\"
+            if os.path.exists(drive_path):
+                drives.append(drive_path)
+    
+    return drives
+
+def filter_drives(drives: List[str], config: Dict[str, Any]) -> List[str]:
+    """설정에 따라 드라이브를 필터링합니다."""
+    filtered_drives = []
+    drive_scan_config = config["drive_scan"]
+    
+    for drive in drives:
+        drive_upper = drive.upper()
+        
+        # 시스템 드라이브 제외
+        if drive_scan_config["exclude_system_drives"]:
+            if drive_upper in [d.upper() for d in drive_scan_config["system_drives"]]:
+                continue
+        
+        # 고정 드라이브 제외 (외장 드라이브만 포함)
+        if not drive_scan_config["include_fixed"]:
+            try:
+                # 드라이브 타입 확인 (간단한 방법)
+                if drive_upper == "C:" or drive_upper == "D:":
+                    continue
+            except:
+                pass
+        
+        filtered_drives.append(drive)
+    
+    return filtered_drives
+
 def clean_mac_trash(root_dir: str, config: Dict[str, Any], dry_run: bool = False, confirm: bool = True, logger=None) -> List[str]:
     """Mac OS 불필요 파일들을 정리"""
     removed = []
@@ -259,11 +338,13 @@ def clean_mac_trash(root_dir: str, config: Dict[str, Any], dry_run: bool = False
 def main():
     """메인 함수"""
     parser = argparse.ArgumentParser(description='Mac OS 불필요 파일 정리 도구')
-    parser.add_argument('target', help='정리할 대상 폴더 경로')
+    parser.add_argument('target', nargs='?', help='정리할 대상 폴더 경로 (지정하지 않으면 모든 외장 드라이브 처리)')
     parser.add_argument('--config', '-c', help='설정 파일 경로')
     parser.add_argument('--dry-run', action='store_true', help='실제 삭제하지 않고 미리보기만 실행')
     parser.add_argument('--no-confirm', action='store_true', help='삭제 전 확인 메시지 건너뛰기')
     parser.add_argument('--verbose', '-v', action='store_true', help='상세한 로그 출력')
+    parser.add_argument('--all-drives', action='store_true', help='모든 연결된 드라이브에서 정리 실행')
+    parser.add_argument('--list-drives', action='store_true', help='처리할 드라이브 목록만 표시')
     
     args = parser.parse_args()
     
@@ -279,6 +360,58 @@ def main():
     if args.dry_run:
         logger.info("DRY RUN 모드로 실행됩니다. 실제로는 삭제되지 않습니다.")
     
+    # 드라이브 목록 표시 모드
+    if args.list_drives:
+        drives = get_connected_drives()
+        filtered_drives = filter_drives(drives, config)
+        print("처리할 드라이브 목록:")
+        for drive in filtered_drives:
+            print(f"  - {drive}")
+        return
+    
+    # 모든 드라이브 처리 모드
+    if args.all_drives or args.target is None:
+        drives = get_connected_drives()
+        filtered_drives = filter_drives(drives, config)
+        
+        if not filtered_drives:
+            logger.warning("처리할 드라이브가 없습니다.")
+            return
+        
+        logger.info(f"처리할 드라이브: {', '.join(filtered_drives)}")
+        
+        # 전체 확인
+        if not args.dry_run and not args.no_confirm:
+            print(f"\n총 {len(filtered_drives)}개의 드라이브에서 정리를 실행하시겠습니까? (y/N): ", end="")
+            response = input().strip().lower()
+            if response not in ['y', 'yes']:
+                logger.info("사용자가 실행을 취소했습니다.")
+                return
+        
+        total_removed = []
+        for drive in filtered_drives:
+            logger.info(f"\n=== {drive} 드라이브 처리 시작 ===")
+            try:
+                removed = clean_mac_trash(
+                    drive, 
+                    config,
+                    dry_run=args.dry_run, 
+                    confirm=False,  # 이미 전체 확인을 했으므로 개별 확인 건너뛰기
+                    logger=logger
+                )
+                total_removed.extend(removed)
+            except Exception as e:
+                logger.error(f"{drive} 드라이브 처리 중 오류 발생: {e}")
+        
+        if total_removed:
+            print(f"\n=== 전체 처리 결과 ===")
+            print(f"총 처리된 항목: {len(total_removed)}개")
+            for path in total_removed:
+                print(f"  - {path}")
+        
+        return
+    
+    # 단일 폴더 처리 모드
     removed = clean_mac_trash(
         args.target, 
         config,
